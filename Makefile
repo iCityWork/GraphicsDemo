@@ -31,7 +31,7 @@ CA65        := $(CC65_BIN)/ca65
 LD65        := $(CC65_BIN)/ld65
 
 # ── Project Name ──────────────────────────────────────────────
-PROJECT     := AtariSetup
+PROJECT     := GraphicsDemo
 
 # ── Directory Layout ──────────────────────────────────────────
 SRC_DIR     := src
