@@ -148,6 +148,24 @@
 #define XITVBV  0xE462  /* VBI exit address — all VBI handlers end here */
 #endif
 
+/*
+ * OS colour shadow registers — written by your code, copied to hardware
+ * by the OS VBI stage-2 once per frame.  These are the PLAYFIELD shadows,
+ * not the player/missile shadows at $02C4-$02C7.
+ */
+#ifndef COLPF1_SH
+#define COLPF1_SH  0x02C9   /* COLOR1 → COLPF1 ($D017) text char pixel  */
+#endif
+#ifndef COLPF2_SH
+#define COLPF2_SH  0x02CA   /* COLOR2 → COLPF2 ($D018) text cell bg      */
+#endif
+#ifndef COLPF3_SH
+#define COLPF3_SH  0x02CB   /* COLOR3 → COLPF3 ($D019) (unused here)     */
+#endif
+#ifndef COLBK_SH
+#define COLBK_SH   0x02CC   /* COLOR4 → COLBK  ($D01A) border/background */
+#endif
+
 /* ── Display List Instruction Bytes ─────────────────────────────────────
  *
  * ANTIC display list byte format:
@@ -178,5 +196,7 @@
 #ifndef DL_JVB
 #define DL_JVB           0x41  /* Jump + VBI: end of display list            */
 #endif                         /* (followed by 2-byte address of list start) */
-
+#ifndef DL_BLANK8_DLI
+#define DL_BLANK8_DLI    0xF0  /* 8 blank scan lines + DLI flag ($70|$80)    */
+#endif
 #endif /* ATARI_HW_H */

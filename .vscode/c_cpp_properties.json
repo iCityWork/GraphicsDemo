@@ -24,8 +24,7 @@
       "name": "Atari 8-bit (CC65) - Mac",
       "includePath": [
         "${workspaceFolder}/include",
-        "/usr/local/bin/cc65/include",
-        "/usr/local/bin/cc65/include/atari"
+        "/usr/local/bin/cc65/include"
       ],
       "defines": [
         "__CC65__",

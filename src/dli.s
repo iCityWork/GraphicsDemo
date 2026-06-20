@@ -1,98 +1,108 @@
 ;----------------------------------------------------------------------
 ; dli.s — Display List Interrupt handler
 ;
-; Fires once per color bar (20 times per frame).
-; Changes the background color (COLBK) for the next bar.
+; Fires 13× per frame:
+;   dli_index 0        : pre-bar — sets bar 1's color
+;   dli_index 1-11     : bar N DLI — sets bar N+1's color
+;   dli_index 12 (=NUM_BARS) : cleanup — restores OS shadow colors
 ;
-; TIMING BUDGET: ~114 machine cycles per scan line (NTSC).
-; This handler uses approximately 40 cycles — well within budget.
+; ── Shadow vs Hardware rule ──────────────────────────────────────────
+; ONLY here (DLI) do we write hardware color registers directly.
+; Shadows ($02Cxx) are updated once per frame at VBI — useless for
+; per-scanline effects. DLI must hit hardware registers to take
+; effect on the very next scanline.
 ;
-; REGISTER PRESERVATION: A DLI is an NMI (Non-Maskable Interrupt).
-; The CPU pushes PC and SR automatically. We must save and restore
-; any other registers we use. Failing to do so corrupts the main
-; program's state and causes crashes.
-;
-; WHY ASSEMBLY: CC65's C output for even a simple function is 60+
-; cycles with unpredictable timing. Assembly lets us count every
-; cycle and guarantee we finish before the next scanline begins.
-;
-; WSYNC: Writing any value to $D409 (WSYNC) stalls the 6502 until
-; the start of the next scanline's horizontal blank. We do this
-; BEFORE writing COLBK so the color change takes effect cleanly
-; at the scanline boundary — no color tearing mid-line.
+; ── Why we also set COLPF1 ──────────────────────────────────────────
+; In Mode 2 (text), character foreground pixels use COLPF1. By setting
+; hardware COLPF1 = COLPF2 = bar color, any character pixels (from
+; screen memory that isn't perfectly zeroed) become invisible against
+; the background — the bars look solid regardless of screen content.
 ;----------------------------------------------------------------------
 
-; Hardware register addresses
-WSYNC  = $D409          ; Write: stall CPU until next scanline
-COLBK  = $D01A          ; Write: background color (hardware register)
-COLPF2 = $D018          ; Write: playfield 2 color (text background)
+WSYNC       = $D409
+COLPF1_HW   = $D017         ; Hardware: text pixel color (char foreground)
+COLPF2_HW   = $D018         ; Hardware: text cell background
+COLBK_HW    = $D01A         ; Hardware: border/background
 
-; Import shared variables from colors.c
-; CC65 prepends underscore to all C global names
-.import _dli_index      ; which bar we're on this frame (unsigned char)
-.import _vbi_offset     ; animation phase from VBI     (unsigned char)
-.import _color_table    ; 128-entry color table        (unsigned char[])
+; OS shadow registers — read in cleanup to restore title/footer colors
+COLPF1_SH   = $02C5
+COLPF2_SH   = $02C6
+COLBK_SH    = $02C8
+
+; MUST match NUM_BARS in display.h
+NUM_BARS    = 12
+
+.import _dli_index
+.import _vbi_offset
+.import _color_table
 
 .segment "CODE"
-
-;----------------------------------------------------------------------
-; _dli_handler — exported so C code can take its address
-;----------------------------------------------------------------------
 .export _dli_handler
 
 .proc _dli_handler
 
-    ; Save registers — the CPU saves PC and P (flags) automatically
-    ; on NMI, but we must save A, X, Y ourselves.
-    pha                     ; save A  (3 cycles)
-    txa                     ; copy X to A
-    pha                     ; save X  (3 cycles)
+    pha                     ; save A
+    txa
+    pha                     ; save X (via A, costs 2 cycles vs TXA+PHA)
 
     ;------------------------------------------------------------------
-    ; Compute color table index:
-    ;   index = (vbi_offset + dli_index) & COLOR_TABLE_MASK (127)
+    ; Is this the cleanup DLI (dli_index == NUM_BARS)?
+    ;------------------------------------------------------------------
+    lda _dli_index
+    cmp #NUM_BARS
+    bne do_bar
+
+    ;------------------------------------------------------------------
+    ; CLEANUP DLI
+    ; Fires at the end of bar 12. After WSYNC we are at the first
+    ; scanline of the post-bar separator. Restore all three hardware
+    ; color registers from OS shadows so the footer is readable.
     ;
-    ; Adding vbi_offset to dli_index is what animates the effect.
-    ; Each frame, vbi_offset increases by 1, so the entire rainbow
-    ; shifts up by one entry — the bars appear to scroll upward.
+    ; We restore COLPF1 too — otherwise text pixel color stays as the
+    ; last bar's color and footer characters appear wrong-colored.
     ;------------------------------------------------------------------
-    lda _vbi_offset         ; (4) load animation phase
-    clc
-    adc _dli_index          ; (4) add current bar number
-    and #127                ; (2) wrap to 0-127 (fast — power of 2 mask)
-    tax                     ; (2) use as index into color_table
+    lda COLPF2_SH           ; fetch OS shadow COLPF2
+    sta WSYNC               ; stall to next scanline boundary
+    sta COLPF2_HW           ; restore hardware COLPF2 for footer
 
-    ;------------------------------------------------------------------
-    ; Look up the color for this bar
-    ;------------------------------------------------------------------
-    lda _color_table,x      ; (5) fetch color byte
+    lda COLPF1_SH           ; fetch OS shadow COLPF1
+    sta COLPF1_HW           ; restore hardware COLPF1 (white title/footer text)
 
-    ;------------------------------------------------------------------
-    ; Wait for the scanline boundary, then set the new color.
-    ;
-    ; STA WSYNC halts the CPU until the start of horizontal blank.
-    ; The SAME accumulator value (our color) is written to both:
-    ;   WSYNC  — triggers the wait (value written is ignored)
-    ;   COLBK  — sets the new background color at the clean boundary
-    ;
-    ; Using the same value for both avoids needing to re-load A.
-    ;------------------------------------------------------------------
-    sta WSYNC               ; (4) wait for scanline — A still = color
-    sta COLBK               ; (4) set background color for next bar
-    sta COLPF2              ; (4) match text background (for title/footer)
+    lda COLBK_SH            ; fetch OS shadow COLBK
+    sta COLBK_HW            ; restore hardware COLBK
 
-    ;------------------------------------------------------------------
-    ; Advance dli_index for the next DLI firing this frame
-    ;------------------------------------------------------------------
-    inc _dli_index          ; (6) next bar's color will be +1 in table
-
-    ; Restore registers
-    pla                     ; restore X  (4)
+    inc _dli_index
+    pla
     tax
-    pla                     ; restore A  (4)
+    pla
+    rti
 
-    rti                     ; return from NMI interrupt  (6)
-                            ; (CPU automatically restores PC and flags)
+    ;------------------------------------------------------------------
+    ; BAR DLI
+    ; Set COLPF1, COLPF2, and COLBK all to the same rainbow color.
+    ;
+    ; Setting COLPF1 = COLPF2 makes character foreground pixels the same
+    ; color as the background — they become invisible. The bars look
+    ; perfectly solid even if screen data isn't pristine.
+    ;------------------------------------------------------------------
+do_bar:
+    lda _vbi_offset         ; animation phase (incremented each VBI)
+    clc
+    adc _dli_index          ; + which bar this is
+    and #127                ; wrap to 0-127
+    tax
+    lda _color_table,x      ; look up rainbow color
+
+    sta WSYNC               ; stall to next scanline boundary — same A used below
+    sta COLPF2_HW           ; text background  = bar color
+    sta COLBK_HW            ; border           = bar color
+    sta COLPF1_HW           ; text foreground  = bar color (chars invisible)
+
+    inc _dli_index
+
+    pla
+    tax
+    pla
+    rti
 
 .endproc
-; Total cycle count: ~55 cycles — 59 cycles to spare per scanline.

@@ -4,7 +4,7 @@
 
     // ── 1. BUILD + LAUNCH  (Ctrl+Shift+B — default) ───────────
     {
-      "label": "Make: Run → Debug + Launch in Atari800MacX",
+      "label": "Make: Run → Debug + Launch in the Atari Emulator",
       "type": "shell",
       "command": "make run",
       "options": { "cwd": "${workspaceFolder}" },
@@ -21,7 +21,7 @@
           "file": 1, "line": 2, "severity": 3, "message": 4
         }
       },
-      "detail": "Debug build + auto-launch in Atari800MacX.  (Ctrl+Shift+B)"
+      "detail": "Debug build + auto-launch in the Atari Emulator.  (Ctrl+Shift+B)"
     },
 
     // ── 2. DEBUG BUILD ONLY — no launch ───────────────────────
@@ -64,7 +64,7 @@
 
     // ── 4. RELEASE BUILD + LAUNCH ─────────────────────────────
     {
-      "label": "Make: Run → Release + Launch in Atari800MacX",
+      "label": "Make: Run → Release + Launch in the Atari Emulator",
       "type": "shell",
       "command": "make run-release",
       "options": { "cwd": "${workspaceFolder}" },
@@ -78,12 +78,12 @@
           "file": 1, "line": 2, "severity": 3, "message": 4
         }
       },
-      "detail": "Release build (-Osir) + launch in Atari800MacX."
+      "detail": "Release build (-Osir) + launch in the Atari Emulator."
     },
 
     // ── 5. XL/XE DEBUG BUILD + LAUNCH ────────────────────────
     {
-      "label": "Make: Run → XL/XE Debug + Launch in Atari800MacX",
+      "label": "Make: Run → XL/XE Debug + Launch in the Atari Emulator",
       "type": "shell",
       "command": "make run-xl",
       "options": { "cwd": "${workspaceFolder}" },
@@ -97,7 +97,7 @@
           "file": 1, "line": 2, "severity": 3, "message": 4
         }
       },
-      "detail": "XL/XE debug build + launch in Atari800MacX."
+      "detail": "XL/XE debug build + launch in the Atari Emulator."
     },
 
     // ── 6. XL/XE DEBUG BUILD ONLY ────────────────────────────
