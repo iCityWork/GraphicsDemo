@@ -1,135 +1,178 @@
-#include <string.h>
+/* ================================================================
+   src/display.c  —  Color Storm ANTIC display list
+   ================================================================
+   KEY CHANGE: No separate footer_line variable.
+   Footer data lives at title_line1+80 = first 40 bytes of dl_raw.
+   Footer row uses DL_MODE2 natural scan — ANTIC scan counter is
+   frozen at title_line1+80 after title_line2, so no LMS needed.
+   ================================================================ */
 #include <peekpoke.h>
 #include "display.h"
+#include "colors.h"
 #include "atari_hw.h"
 
-#define SDLSTL  0x0230
-#define CRSINH  0x02F0
-
+/* BSS declaration order is critical:
+   title_line1[40]  <- LMS anchor
+   title_line2[40]  <- natural scan from title_line1 LMS (= title_line1+40)
+   dl_raw[256]      <- DL workspace; bytes 0..39 = FOOTER SCREEN DATA  */
 static unsigned char title_line1[SCREEN_WIDTH];
 static unsigned char title_line2[SCREEN_WIDTH];
-static unsigned char footer_line1[SCREEN_WIDTH];
-static unsigned char footer_line2[SCREEN_WIDTH];
+static unsigned char dl_raw[256];
 
-static unsigned char  dl_raw[256];
-static unsigned char *display_list;
-static unsigned int   os_dlist;
+static unsigned int  orig_sdlst;
+static unsigned char *dl_ptr;
 
-#define DL_MAX_SIZE 64
-
-static void compute_dl_ptr(void)
+/* ---------------------------------------------------------------
+   compute_dl_ptr: 256-byte aligned address in dl_raw that does
+   not cross a 1KB ANTIC boundary.
+   --------------------------------------------------------------- */
+static unsigned char *compute_dl_ptr(void)
 {
-    unsigned int addr    = (unsigned int)dl_raw;
-    unsigned int in_page = addr & 0x03FFu;
-    if (in_page + DL_MAX_SIZE > 0x0400u)
-        display_list = dl_raw + (0x0400u - in_page);
-    else
-        display_list = dl_raw;
+    unsigned int addr = (unsigned int)dl_raw;
+    if (addr & 0xFFu) {
+        addr = (addr & 0xFF00u) + 0x0100u;
+    }
+    if ((addr & 0x03FFu) > (0x0400u - 64u)) {
+        addr = (addr & 0xFC00u) + 0x0400u;
+    }
+    return (unsigned char *)addr;
 }
 
-static void str_to_screen(const char *str, unsigned char *dest,
-                           unsigned char maxlen)
-{
-    unsigned char len = 0, start, i;
-    const char *p;
-    for (p = str; *p; ++p) ++len;
-    if (len > maxlen) len = maxlen;
-    memset(dest, 0, maxlen);
-    start = (maxlen - len) / 2;
-    for (i = 0; i < len; i++)
-        dest[start + i] = (unsigned char)(str[i] - 32);
-}
-
+/* ================================================================
+   display_init
+   ================================================================ */
 void display_init(void)
 {
-    unsigned char  i;
+    unsigned char *footer;
     unsigned char *dl;
+    unsigned char  i;
 
-    compute_dl_ptr();
-    dl = display_list;
+    /* title_line1: "*** COLOR STORM ***"  cols 10-28 */
+    for (i = 0; i < SCREEN_WIDTH; i++) title_line1[i] = 0;
+    title_line1[10] = 10;   /* * */
+    title_line1[11] = 10;   /* * */
+    title_line1[12] = 10;   /* * */
+    title_line1[14] = 35;   /* C */
+    title_line1[15] = 47;   /* O */
+    title_line1[16] = 44;   /* L */
+    title_line1[17] = 47;   /* O */
+    title_line1[18] = 50;   /* R */
+    title_line1[20] = 51;   /* S */
+    title_line1[21] = 52;   /* T */
+    title_line1[22] = 47;   /* O */
+    title_line1[23] = 50;   /* R */
+    title_line1[24] = 45;   /* M */
+    title_line1[26] = 10;   /* * */
+    title_line1[27] = 10;   /* * */
+    title_line1[28] = 10;   /* * */
 
-    str_to_screen("** ATARI COLOR STORM **",    title_line1,  SCREEN_WIDTH);
-    str_to_screen("  CC65  +  ANTIC  DLI  ",    title_line2,  SCREEN_WIDTH);
-    str_to_screen(" PRESS  ANY  KEY  TO EXIT ", footer_line1, SCREEN_WIDTH);
-    memset(footer_line2, 0, SCREEN_WIDTH);
+    /* title_line2: "ANTIC DLI DEMO"  cols 13-26 */
+    for (i = 0; i < SCREEN_WIDTH; i++) title_line2[i] = 0;
+    title_line2[13] = 33;   /* A */
+    title_line2[14] = 46;   /* N */
+    title_line2[15] = 52;   /* T */
+    title_line2[16] = 41;   /* I */
+    title_line2[17] = 35;   /* C */
+    title_line2[19] = 36;   /* D */
+    title_line2[20] = 44;   /* L */
+    title_line2[21] = 41;   /* I */
+    title_line2[23] = 36;   /* D */
+    title_line2[24] = 37;   /* E */
+    title_line2[25] = 45;   /* M */
+    title_line2[26] = 47;   /* O */
 
-    /* Shadow registers — OS VBI copies these to hardware each frame.
-       COLPF1 and COLPF2 control Mode-2 text colours.
-       The bar DLIs only touch COLBK, so these values persist intact
-       through the entire frame — title and footer both get them. */
-    POKE(COLPF1_SH, 0x0E);   /* white  — character pixels     */
-    POKE(COLPF2_SH, 0x84);   /* dark blue — character bg      */
-    POKE(COLBK_SH,  0x02);   /* near-black — border           */
-    POKE(CRSINH,    1);
+    /* footer: "PRESS ANY KEY TO EXIT"  cols 9-29
+       Stored at title_line1+80 = title_line2+40 = &dl_raw[0].
+       No separate C variable — pointer arithmetic from title_line1
+       avoids any symbol-resolution issue.                          */
+    footer = title_line1 + (2u * SCREEN_WIDTH);
+    for (i = 0; i < SCREEN_WIDTH; i++) footer[i] = 0;
+    footer[ 9] = 48;  /* P */
+    footer[10] = 50;  /* R */
+    footer[11] = 37;  /* E */
+    footer[12] = 51;  /* S */
+    footer[13] = 51;  /* S */
+    footer[15] = 33;  /* A */
+    footer[16] = 46;  /* N */
+    footer[17] = 57;  /* Y */
+    footer[19] = 43;  /* K */
+    footer[20] = 37;  /* E */
+    footer[21] = 57;  /* Y */
+    footer[23] = 52;  /* T */
+    footer[24] = 47;  /* O */
+    footer[26] = 37;  /* E */
+    footer[27] = 56;  /* X */
+    footer[28] = 41;  /* I */
+    footer[29] = 52;  /* T */
 
-    /* ── Display list ──────────────────────────────────────────────── */
+    /* Build display list */
+    dl_ptr = compute_dl_ptr();
+    dl     = dl_ptr;
 
-    /* 24 blank lines (top margin) */
+    /* Top margin: 3x8 = 24 blank scanlines */
     *dl++ = DL_BLANK8;
     *dl++ = DL_BLANK8;
     *dl++ = DL_BLANK8;
 
-    /* Title — rendered before any DLI fires, uses OS shadow colours */
+    /* Title row 1: explicit LMS to title_line1 */
     *dl++ = DL_MODE2_LMS;
-    *dl++ = (unsigned char)((unsigned int)title_line1 & 0xFF);
+    *dl++ = (unsigned char)((unsigned int)title_line1 & 0xFFu);
     *dl++ = (unsigned char)((unsigned int)title_line1 >> 8);
 
-    *dl++ = DL_MODE2_LMS;
-    *dl++ = (unsigned char)((unsigned int)title_line2 & 0xFF);
-    *dl++ = (unsigned char)((unsigned int)title_line2 >> 8);
+    /* Title row 2: natural scan -> title_line2 (= title_line1+40) */
+    *dl++ = DL_MODE2;
 
-    /* Gap + pre-bar DLI ─────────────────────────────────────────────
-       DL_BLANK8_DLI entries show their 8 scanlines in COLBK colour.
-       The DLI fires at the END and WSYNC stalls to the NEXT section,
-       so each entry's DLI sets the colour of the FOLLOWING bar.
+    /* Separator */
+    *dl++ = DL_BLANK8;
 
-       Pre-bar (dli_index=0): fires → WSYNC → bar 1 COLBK = colour 0.
-       The 8 pre-bar scanlines display COLBK=$02 (near-black) because
-       no DLI has changed it yet — acts as a dark gap before the bars. */
-    *dl++ = DL_BLANK8_DLI;   /* pre-bar, dli_index = 0 */
-
-    /* Bars 1-12 — all blank lines, DLI only touches COLBK.
-       COLPF1 and COLPF2 are NEVER written by bar DLIs, so the
-       Mode-2 footer always has the correct text colours.
-       dli_index 1-11  → do_bar (sets next bar COLBK via WSYNC)
-       dli_index 12    → cleanup (sets COLBK=$02 for separator+footer) */
-    for (i = 0; i < NUM_BARS; i++) {
+    /* 12 rainbow bars + 1 COLBK-reset DLI trigger */
+    for (i = 0; i <= NUM_BARS; i++) {
         *dl++ = DL_BLANK8_DLI;
     }
 
-    /* Separator — 8 plain blank lines.
-       COLBK=$02 (near-black) was restored by the cleanup DLI above. */
+    /* Post-bar spacer: 2x8 = 16 scanlines */
+    *dl++ = DL_BLANK8;
     *dl++ = DL_BLANK8;
 
-    /* Footer — Mode-2 text.
-       COLPF1=$0E (white) and COLPF2=$84 (dark blue) were never
-       changed by any DLI, so text is always visible here. */
-    *dl++ = DL_MODE2_LMS;
-    *dl++ = (unsigned char)((unsigned int)footer_line1 & 0xFF);
-    *dl++ = (unsigned char)((unsigned int)footer_line1 >> 8);
+    /* Footer row: NATURAL SCAN — no LMS.
+       After title_line2, ANTIC scan counter = title_line1+80.
+       All blank/DLI-blank lines freeze the counter there.
+       This DL_MODE2 reads directly from our footer data.     */
+    *dl++ = DL_MODE2;
 
-    *dl++ = DL_MODE2_LMS;
-    *dl++ = (unsigned char)((unsigned int)footer_line2 & 0xFF);
-    *dl++ = (unsigned char)((unsigned int)footer_line2 >> 8);
+    /* Trailing blanks: 2x8 = 16 scanlines */
+    *dl++ = DL_BLANK8;
+    *dl++ = DL_BLANK8;
 
-    /* Jump and Wait for VBL */
+    /* Jump and Wait for Vertical Blank */
     *dl++ = DL_JVB;
-    *dl++ = (unsigned char)((unsigned int)display_list & 0xFF);
-    *dl++ = (unsigned char)((unsigned int)display_list >> 8);
+    *dl++ = (unsigned char)((unsigned int)dl_ptr & 0xFFu);
+    *dl++ = (unsigned char)((unsigned int)dl_ptr >> 8);
+
+    /* Scanline audit: 24+8+8+8+104+16+8+16 = 192 (NTSC) */
 }
 
+/* ================================================================
+   display_install
+   ================================================================ */
 void display_install(void)
 {
-    os_dlist = PEEKW(SDLSTL);
-    POKEW(SDLSTL, (unsigned int)display_list);
-    DLISTL = (unsigned char)((unsigned int)display_list & 0xFF);
-    DLISTH = (unsigned char)((unsigned int)display_list >> 8);
+    orig_sdlst = PEEKW(SDLSTL);
+    POKE(CRSINH, 1u);
+    POKE(COLPF1_SH, 0x0Fu);
+    POKE(COLBK_SH,  0x00u);
+    POKEW(SDLSTL, (unsigned int)dl_ptr);
+    DLISTL = (unsigned char)((unsigned int)dl_ptr & 0xFFu);
+    DLISTH = (unsigned char)((unsigned int)dl_ptr >> 8);
 }
 
+/* ================================================================
+   display_restore
+   ================================================================ */
 void display_restore(void)
 {
-    POKEW(SDLSTL, os_dlist);
-    DLISTL = (unsigned char)(os_dlist & 0xFF);
-    DLISTH = (unsigned char)(os_dlist >> 8);
-    POKE(CRSINH, 0);
+    POKEW(SDLSTL, orig_sdlst);
+    DLISTL = (unsigned char)(orig_sdlst & 0xFFu);
+    DLISTH = (unsigned char)(orig_sdlst >> 8);
+    POKE(CRSINH, 0u);
 }

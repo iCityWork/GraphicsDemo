@@ -1,81 +1,47 @@
-/*
- * main.c — ATARI COLOR STORM demo entry point
- */
-
 #include <conio.h>
 #include <peekpoke.h>
-#include "atari_hw.h"
-#include "display.h"
+
 #include "colors.h"
+#include "display.h"
+#include "atari_hw.h"   /* pulls in <atari.h> + all NMIEN_* defines */
 
-extern void dli_handler(void);
-extern void vbi_handler(void);
-
-/* OS shadow color registers — restore on exit */
-#define COLPF1_SH  0x02C5
-#define COLPF2_SH  0x02C6
-#define COLBK_SH   0x02C8
-
-static unsigned int orig_vbi;
-
-/* Save initial OS color shadows so we can restore them on exit */
-static unsigned char orig_colpf1;
-static unsigned char orig_colpf2;
-static unsigned char orig_colbk;
+/* Assembly interrupt handlers (defined in dli.s and vbi.s) */
+void dli_handler(void);
+void vbi_handler(void);
 
 int main(void)
 {
-    /* ── Step 1: Save OS state we'll be changing ── */
-    orig_vbi    = PEEKW(0x0224);          /* VVBLKD — in OS RAM, readable */
+    unsigned int  orig_vbi;
+    unsigned char orig_colpf1, orig_colpf2, orig_colbk;
+
+    /* ── Save OS state we will modify ──────────────────────────────── */
+    orig_vbi    = PEEKW(0x0224);   /* deferred VBI vector              */
     orig_colpf1 = PEEK(COLPF1_SH);
     orig_colpf2 = PEEK(COLPF2_SH);
     orig_colbk  = PEEK(COLBK_SH);
 
-    /* ── Step 2: Build display list and color table ── */
+    /* ── Initialise colour table, screen buffers, display list ─────── */
     colors_init();
     display_init();
 
-    /* ── Step 3: Install everything with NMI fully disabled ──
-     *
-     * Keep NMI off for the entire setup sequence. This prevents the VBI
-     * from firing between our writes and seeing a half-configured state
-     * (e.g., DLI installed but display list not yet switched, or vice versa).
-     * The window is only a few microseconds — negligible to the OS.
-     */
+    /* ── Install interrupt handlers ─────────────────────────────────── */
+    NMIEN = NMIEN_NONE;                        /* silence all NMIs      */
+    POKEW(0x0200, (unsigned int)dli_handler);  /* DLI vector at $0200   */
+    POKEW(0x0224, (unsigned int)vbi_handler);  /* deferred VBI at $0224 */
+    display_install();                         /* point ANTIC at our DL */
+    NMIEN = NMIEN_BOTH;                        /* enable VBI + DLI      */
+
+    /* ── Run until any key is pressed ──────────────────────────────── */
+    cgetc();
+
+    /* ── Restore OS state ────────────────────────────────────────────  */
     NMIEN = NMIEN_NONE;
-
-    POKEW(0x0200, (unsigned int)dli_handler);   /* DLI vector (VDSLST)  */
-    POKEW(0x0224, (unsigned int)vbi_handler);   /* VBI vector (VVBLKD)  */
-
-    display_install();  /* switch ANTIC to our display list (shadow + hw) */
-
-    /* Demo is live — enable both VBI and DLI */
-    NMIEN = NMIEN_BOTH;
-
-    /* ── Step 4: Main loop — demo runs entirely in interrupts ──
-     *
-     * The 6502 sits here doing nothing. All animation happens in
-     * dli_handler (20×/frame) and vbi_handler (1×/frame).
-     */
-    cgetc();   /* block until any key pressed */
-
-    /* ── Step 5: Tear down in reverse order ──
-     *
-     * Disable everything first, then restore. Never restore the display
-     * list while interrupts are live — a DLI could fire mid-restore and
-     * try to read COLBK while ANTIC is in an unknown state.
-     */
-    NMIEN = NMIEN_NONE;
-
-    display_restore();                    /* restore OS display list   */
-    POKEW(0x0224, orig_vbi);              /* restore OS VBI vector     */
-
-    /* Restore OS color shadows (VBI will copy them to hardware) */
+    display_restore();
+    POKEW(0x0224, orig_vbi);
     POKE(COLPF1_SH, orig_colpf1);
     POKE(COLPF2_SH, orig_colpf2);
     POKE(COLBK_SH,  orig_colbk);
-
-    NMIEN = NMIEN_VBI;   /* re-enable OS VBI only */
+    NMIEN = NMIEN_VBI;             /* VBI only — OS needs it            */
 
     clrscr();
     return 0;
