@@ -1,174 +1,98 @@
-/* ================================================================
-   src/display.c  —  Color Storm ANTIC display list
-   ================================================================
-   KEY CHANGE: No separate footer_line variable.
-   Footer data lives at title_line1+80 = first 40 bytes of dl_raw.
-   Footer row uses DL_MODE2 natural scan — ANTIC scan counter is
-   frozen at title_line1+80 after title_line2, so no LMS needed.
-   ================================================================ */
 #include <peekpoke.h>
 #include "display.h"
 #include "colors.h"
 #include "atari_hw.h"
 
-/* BSS declaration order is critical:
-   title_line1[40]  <- LMS anchor
-   title_line2[40]  <- natural scan from title_line1 LMS (= title_line1+40)
-   dl_raw[256]      <- DL workspace; bytes 0..39 = FOOTER SCREEN DATA  */
-static unsigned char title_line1[SCREEN_WIDTH];
-static unsigned char title_line2[SCREEN_WIDTH];
-static unsigned char dl_raw[256];
+#define TITLE1_ADDR  0x3000u
+#define TITLE2_ADDR  0x3028u
+#define FOOTER_ADDR  0x3050u
+#define DL_ADDR      0x3100u
 
-static unsigned int  orig_sdlst;
-static unsigned char *dl_ptr;
+static unsigned int orig_sdlst;
 
-/* ---------------------------------------------------------------
-   compute_dl_ptr: 256-byte aligned address in dl_raw that does
-   not cross a 1KB ANTIC boundary.
-   --------------------------------------------------------------- */
-static unsigned char *compute_dl_ptr(void)
-{
-    unsigned int addr = (unsigned int)dl_raw;
-    if (addr & 0xFFu) {
-        addr = (addr & 0xFF00u) + 0x0100u;
-    }
-    if ((addr & 0x03FFu) > (0x0400u - 64u)) {
-        addr = (addr & 0xFC00u) + 0x0400u;
-    }
-    return (unsigned char *)addr;
-}
-
-/* ================================================================
-   display_init
-   ================================================================ */
 void display_init(void)
 {
-    unsigned char *footer;
-    unsigned char *dl;
+    unsigned char *title1 = (unsigned char *)TITLE1_ADDR;
+    unsigned char *title2 = (unsigned char *)TITLE2_ADDR;
+    unsigned char *dl     = (unsigned char *)DL_ADDR;
     unsigned char  i;
 
-    /* title_line1: "*** COLOR STORM ***"  cols 10-28 */
-    for (i = 0; i < SCREEN_WIDTH; i++) title_line1[i] = 0;
-    title_line1[10] = 10;   /* * */
-    title_line1[11] = 10;   /* * */
-    title_line1[12] = 10;   /* * */
-    title_line1[14] = 35;   /* C */
-    title_line1[15] = 47;   /* O */
-    title_line1[16] = 44;   /* L */
-    title_line1[17] = 47;   /* O */
-    title_line1[18] = 50;   /* R */
-    title_line1[20] = 51;   /* S */
-    title_line1[21] = 52;   /* T */
-    title_line1[22] = 47;   /* O */
-    title_line1[23] = 50;   /* R */
-    title_line1[24] = 45;   /* M */
-    title_line1[26] = 10;   /* * */
-    title_line1[27] = 10;   /* * */
-    title_line1[28] = 10;   /* * */
-
-    /* title_line2: "ANTIC DLI DEMO"  cols 13-26 */
-    for (i = 0; i < SCREEN_WIDTH; i++) title_line2[i] = 0;
-    title_line2[13] = 33;   /* A */
-    title_line2[14] = 46;   /* N */
-    title_line2[15] = 52;   /* T */
-    title_line2[16] = 41;   /* I */
-    title_line2[17] = 35;   /* C */
-    title_line2[19] = 36;   /* D */
-    title_line2[20] = 44;   /* L */
-    title_line2[21] = 41;   /* I */
-    title_line2[23] = 36;   /* D */
-    title_line2[24] = 37;   /* E */
-    title_line2[25] = 45;   /* M */
-    title_line2[26] = 47;   /* O */
-
-    /* footer: "PRESS ANY KEY TO EXIT"  cols 9-29
-       Stored at title_line1+80 = title_line2+40 = &dl_raw[0].
-       No separate C variable — pointer arithmetic from title_line1
-       avoids any symbol-resolution issue.                          */
-    footer = title_line1 + (2u * SCREEN_WIDTH);
-    for (i = 0; i < SCREEN_WIDTH; i++) footer[i] = 0;
-    footer[ 9] = 48;  /* P */
-    footer[10] = 50;  /* R */
-    footer[11] = 37;  /* E */
-    footer[12] = 51;  /* S */
-    footer[13] = 51;  /* S */
-    footer[15] = 33;  /* A */
-    footer[16] = 46;  /* N */
-    footer[17] = 57;  /* Y */
-    footer[19] = 43;  /* K */
-    footer[20] = 37;  /* E */
-    footer[21] = 57;  /* Y */
-    footer[23] = 52;  /* T */
-    footer[24] = 47;  /* O */
-    footer[26] = 37;  /* E */
-    footer[27] = 56;  /* X */
-    footer[28] = 41;  /* I */
-    footer[29] = 52;  /* T */
-
-    /* Build display list */
-    dl_ptr = compute_dl_ptr();
-    dl     = dl_ptr;
-
-    /* Top margin: 3x8 = 24 blank scanlines */
-    *dl++ = DL_BLANK8;
-    *dl++ = DL_BLANK8;
-    *dl++ = DL_BLANK8;
-
-    /* Title row 1: explicit LMS to title_line1 */
-    *dl++ = DL_MODE2_LMS;
-    *dl++ = (unsigned char)((unsigned int)title_line1 & 0xFFu);
-    *dl++ = (unsigned char)((unsigned int)title_line1 >> 8);
-
-    /* Title row 2: natural scan -> title_line2 (= title_line1+40) */
-    *dl++ = DL_MODE2;
-
-    /* Separator */
-    *dl++ = DL_BLANK8;
-
-    /* 12 rainbow bars + 1 COLBK-reset DLI trigger */
-    for (i = 0; i <= NUM_BARS; i++) {
-        *dl++ = DL_BLANK8_DLI;
+    /* Clear all three screen rows */
+    for (i = 0; i < SCREEN_WIDTH; i++) {
+        title1[i] = 0;
+        title2[i] = 0;
+        POKE(FOOTER_ADDR + i, 0u);
     }
 
-    /* Post-bar spacer: 2x8 = 16 scanlines */
-    *dl++ = DL_BLANK8;
-    *dl++ = DL_BLANK8;
+    /* Title row 1: *** COLOR STORM *** */
+    title1[10]=10; title1[11]=10; title1[12]=10;
+    title1[14]=35; title1[15]=47; title1[16]=44; title1[17]=47; title1[18]=50;
+    title1[20]=51; title1[21]=52; title1[22]=47; title1[23]=50; title1[24]=45;
+    title1[26]=10; title1[27]=10; title1[28]=10;
 
-    /* Footer row: NATURAL SCAN — no LMS.
-       After title_line2, ANTIC scan counter = title_line1+80.
-       All blank/DLI-blank lines freeze the counter there.
-       This DL_MODE2 reads directly from our footer data.     */
-    *dl++ = DL_MODE2;
+    /* Title row 2: ANTIC DLI DEMO */
+    title2[13]=33; title2[14]=46; title2[15]=52; title2[16]=41; title2[17]=35;
+    title2[19]=36; title2[20]=44; title2[21]=41;
+    title2[23]=36; title2[24]=37; title2[25]=45; title2[26]=47;
 
-    /* Trailing blanks: 2x8 = 16 scanlines */
-    *dl++ = DL_BLANK8;
-    *dl++ = DL_BLANK8;
+    /* Footer: PRESS ANY KEY TO EXIT
+       Written via explicit absolute POKEs — no pointer arithmetic,
+       no array indexing, no possible compiler offset error.
+       FOOTER_ADDR = 0x3050, so [9] = 0x3059, [10] = 0x305A, etc. */
+    POKE(0x3059u, 48u);  /* P */
+    POKE(0x305Au, 50u);  /* R */
+    POKE(0x305Bu, 37u);  /* E */
+    POKE(0x305Cu, 51u);  /* S */
+    POKE(0x305Du, 51u);  /* S */
+    /* [0x305E] = 0 (space) — already zeroed above */
+    POKE(0x305Fu, 33u);  /* A */
+    POKE(0x3060u, 46u);  /* N */
+    POKE(0x3061u, 57u);  /* Y */
+    /* [0x3062] = 0 (space) */
+    POKE(0x3063u, 43u);  /* K */
+    POKE(0x3064u, 37u);  /* E */
+    POKE(0x3065u, 57u);  /* Y */
+    /* [0x3066] = 0 (space) */
+    POKE(0x3067u, 52u);  /* T */
+    POKE(0x3068u, 47u);  /* O */
+    /* [0x3069] = 0 (space) */
+    POKE(0x306Au, 37u);  /* E */
+    POKE(0x306Bu, 56u);  /* X */
+    POKE(0x306Cu, 41u);  /* I */
+    POKE(0x306Du, 52u);  /* T */
 
-    /* Jump and Wait for Vertical Blank */
+    /* Build display list at DL_ADDR = $3100 */
+    *dl++ = DL_BLANK8; *dl++ = DL_BLANK8; *dl++ = DL_BLANK8;
+    *dl++ = DL_MODE2_LMS;
+    *dl++ = (unsigned char)(TITLE1_ADDR & 0xFFu);
+    *dl++ = (unsigned char)(TITLE1_ADDR >> 8);
+    *dl++ = DL_MODE2_LMS;
+    *dl++ = (unsigned char)(TITLE2_ADDR & 0xFFu);
+    *dl++ = (unsigned char)(TITLE2_ADDR >> 8);
+    *dl++ = DL_BLANK8;
+    for (i = 0; i <= NUM_BARS; i++) *dl++ = DL_BLANK8_DLI;
+    *dl++ = DL_BLANK8; *dl++ = DL_BLANK8;
+    *dl++ = DL_MODE2_LMS;
+    *dl++ = (unsigned char)(FOOTER_ADDR & 0xFFu);
+    *dl++ = (unsigned char)(FOOTER_ADDR >> 8);
+    *dl++ = DL_BLANK8; *dl++ = DL_BLANK8;
     *dl++ = DL_JVB;
-    *dl++ = (unsigned char)((unsigned int)dl_ptr & 0xFFu);
-    *dl++ = (unsigned char)((unsigned int)dl_ptr >> 8);
-
-    /* Scanline audit: 24+8+8+8+104+16+8+16 = 192 (NTSC) */
+    *dl++ = (unsigned char)(DL_ADDR & 0xFFu);
+    *dl++ = (unsigned char)(DL_ADDR >> 8);
 }
 
-/* ================================================================
-   display_install
-   ================================================================ */
 void display_install(void)
 {
     orig_sdlst = PEEKW(SDLSTL);
-    POKE(CRSINH, 1u);
-    POKE(COLPF1_SH, 0x0Fu);
-    POKE(COLBK_SH,  0x00u);
-    POKEW(SDLSTL, (unsigned int)dl_ptr);
-    DLISTL = (unsigned char)((unsigned int)dl_ptr & 0xFFu);
-    DLISTH = (unsigned char)((unsigned int)dl_ptr >> 8);
+    POKE(CRSINH,    1u);
+    POKE(COLPF2_SH, 0x94u);  /* blue text background */
+    POKE(COLPF1_SH, 0x0Fu);  /* max luminance → bright text foreground */
+    POKE(COLBK_SH,  0x00u);  /* black outer background */
+    POKEW(SDLSTL, DL_ADDR);
+    DLISTL = (unsigned char)(DL_ADDR & 0xFFu);
+    DLISTH = (unsigned char)(DL_ADDR >> 8);
 }
 
-/* ================================================================
-   display_restore
-   ================================================================ */
 void display_restore(void)
 {
     POKEW(SDLSTL, orig_sdlst);
